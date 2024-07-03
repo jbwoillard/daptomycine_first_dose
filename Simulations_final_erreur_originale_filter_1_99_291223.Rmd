@@ -1,0 +1,1862 @@
+---
+title: "Simulations_final_dvorchick_erreur_originale_ss_temp_filter_1_99"
+output: html_document
+date: "2023-12-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#Chargement des Packages 
+
+library(mrgsolve)
+library(tidyverse)
+library(truncnorm)
+library(mapbayr)
+library(PKNCA)
+library(MESS)
+library(GGally)
+
+library(tidymodels)
+library(skimr)
+library(PKNCA)
+library(tableone)
+library(blandr)
+library(DALEX)
+
+```
+
+Modele dvorchik
+
+```{r}
+# creation des data
+dapto <-
+
+  "
+
+$PARAM @annotated
+
+TVCL:  0.807 : Clearance
+
+TVV1: 4.80 : Central volume
+
+TVV2  : 3.13 : Peripheral volume of distribution
+
+TVQ   :  3.46 : Intercompartmental clearance
+
+CRCL: 0.00514 : effect of CLCR on CL
+
+TCL: 0.14 : effect of body temperature on CL
+
+WTQ: 0.0593 : linear effect of WT deviation on Q
+
+WTV2: 0.0458 : linear effect of WT deviation on V2
+
+
+
+ETA1: 0 : Clearance (L/h)
+
+ETA2: 0 : central volume (L)
+
+ETA3: 0 : intercompartmental Clearance (L/h)
+
+ETA4: 0 : peripheral volume (L)
+
+
+
+$PARAM @annotated @covariates
+
+CREATCL : 91.2 : estimated creat clearance ml/min
+
+WT: 75.1 : Body weight
+
+SEX : 1 : men (1) women(0)
+
+
+
+
+$OMEGA 0.093636 0.3249 0.425104 0.036481
+
+
+
+$SIGMA
+
+0.001 // proportional
+
+2.068 // additive 
+
+
+
+$CMT @annotated
+
+CENT  : Central compartment (mg/L)[ADM, OBS]
+
+PERIPH: Peripheral compartment ()
+
+
+
+$TABLE
+
+capture DV = (CENT/V1) *(1 + EPS(1)) + EPS(2);
+
+
+
+int i = 0;
+
+while(DV<0 && i <100) {
+
+simeps();
+
+DV = (CENT/V1) *(1 + EPS(1)) + EPS(2);
+
+++i;
+
+}
+
+
+
+$MAIN
+
+double CL = ((TVCL+ CRCL*(CREATCL - 91.2))*(0.8 + 0.2*SEX)) * exp(ETA1 + ETA(1));
+
+double V1 = TVV1  * exp(ETA2 + ETA(2)) ;
+
+double Q = (TVQ + WTQ * (WT - 75.1)) * exp(ETA3 + ETA(3)) ;
+
+double V2 = (TVV2 + WTV2 * (WT - 75.1)) * exp(ETA4 + ETA(4)) ;
+
+
+
+$ODE
+
+dxdt_CENT   =  -(CL+Q)*CENT/V1 + Q*PERIPH/V2 ;
+
+dxdt_PERIPH =  Q*CENT/V1 - Q*PERIPH/V2 ;
+
+
+
+$CAPTURE DV CL V2 V1 Q
+
+"
+
+my_model_dapto <- mcode("dapto_model", dapto)
+
+```
+
+
+
+```{r}
+
+#Simulation de 4500 patients
+
+i=1
+set.seed(str_c(12,i))
+WT_data = tibble(ID = 1:4500) %>% mutate(WT = rtruncnorm(n(),a=48, b=153, mean=75.1, sd=30))
+set.seed(str_c(12,i))
+CREATCL_data = tibble(ID = 1:4500) %>% mutate(CREATCL = rtruncnorm(n(),a=14, b=150, mean=91.2, sd=30))
+set.seed(str_c(12,i))
+SEX_data = tibble(ID = 1:4500) %>% mutate(SEX = rbinom(n(),1,0.59)) 
+data_ev <- as_tibble(ev(ID = 1:500, amt = 4, ii=24, addl=5, tinf=0.5)) %>%
+  mutate(dose_group = "4mg/kg") %>%
+  bind_rows(as_tibble(ev(ID = 501:1000, amt = 5,ii=24, addl=5, tinf=0.5))%>% 
+              mutate(dose_group = "5mg/kg")) %>% 
+  bind_rows(as_tibble(ev(ID = 1001:1500, amt = 6,ii=24, addl=5, tinf=0.5))%>% 
+              mutate(dose_group = "6mg/kg"))%>%
+  bind_rows(as_tibble(ev(ID = 1501:2000, amt = 7,ii=24, addl=5, tinf=0.5))%>% 
+              mutate(dose_group = "7mg/kg"))%>%
+  bind_rows(as_tibble(ev(ID = 2001:2500, amt = 8,ii=24, addl=5, tinf=0.5))%>% 
+              mutate(dose_group = "8mg/kg"))%>%
+  bind_rows(as_tibble(ev(ID = 2501:3000, amt = 9,ii=24, addl=5, tinf=0.5))%>% 
+              mutate(dose_group = "9mg/kg"))%>%
+  bind_rows(as_tibble(ev(ID = 3001:3500, amt = 10,ii=24, addl=5, tinf=0.5))%>% 
+              mutate(dose_group = "10mg/kg"))%>%
+  bind_rows(as_tibble(ev(ID = 3501:4000, amt = 11,ii=24, addl=5, tinf=0.5))%>% 
+              mutate(dose_group = "11mg/kg"))%>%
+  bind_rows(as_tibble(ev(ID = 4001:4500, amt = 12,ii=24, addl=5, tinf=0.5))%>% 
+              mutate(dose_group = "12mg/kg"))%>%
+  arrange(ID) %>%
+  left_join(WT_data) %>%
+  left_join(CREATCL_data) %>%
+  left_join(SEX_data) %>% 
+  mutate(amt = WT*amt, rate = amt/tinf) 
+
+i=1
+set.seed(str_c(12,i))
+out <- my_model_dapto %>% 
+  data_set(data_ev) %>%
+  Req(DV, CL) %>%
+  mrgsim(end = 97, delta = 0.5)
+
+
+#Creation data simulation
+simul_dapto <- as_tibble(out) %>% left_join(data_ev %>% select(ID, dose_group, WT, SEX, CREATCL), by = c("ID" = "ID")) %>% filter(between(DV,0,600)) 
+
+simul_dapto %>% filter(ID==1) %>% ggplot(aes(x = time, y = DV, color = as.factor(SEX))) + geom_point() + geom_line() + labs(x = "Time (h)", y = "Daptomycin concentration (mg/L)") + theme_bw() + theme(legend.position = "none")
+
+#Simulation de 450 patients extremes
+WT_data_ex = tibble(ID = 4501:4950) %>% mutate(WT = rtruncnorm(n(),a=100, b=153, mean=120, sd=30))
+set.seed(str_c(12,i))
+CREATCL_data_ex = tibble(ID = 4501:4950) %>% mutate(CREATCL = rtruncnorm(n(),a=14, b=60, mean=30, sd=15))
+set.seed(str_c(12,i))
+SEX_data_ex = tibble(ID = 4501:4950) %>% mutate(SEX = rbinom(n(),1,0.59)) 
+data_ev_ex <- as_tibble(ev(ID = 4501:4550, amt = 4, ii=24, addl=5, tinf=0.5)) %>%
+  mutate(dose_group = "4mg/kg") %>%
+  bind_rows(as_tibble(ev(ID = 4551:4600, amt = 5,ii=24, addl=5, tinf=0.5))%>% 
+              mutate(dose_group = "5mg/kg")) %>% 
+  bind_rows(as_tibble(ev(ID = 4601:4650, amt = 6,ii=24, addl=5, tinf=0.5))%>% 
+              mutate(dose_group = "6mg/kg"))%>%
+  bind_rows(as_tibble(ev(ID = 4651:4700, amt = 7,ii=24, addl=5, tinf=0.5))%>% 
+              mutate(dose_group = "7mg/kg"))%>%
+  bind_rows(as_tibble(ev(ID = 4701:4750, amt = 8,ii=24, addl=5, tinf=0.5))%>% 
+              mutate(dose_group = "8mg/kg"))%>%
+  bind_rows(as_tibble(ev(ID = 4751:4800, amt = 9,ii=24, addl=5, tinf=0.5))%>% 
+              mutate(dose_group = "9mg/kg"))%>%
+  bind_rows(as_tibble(ev(ID = 4801:4850, amt = 10,ii=24, addl=5, tinf=0.5))%>% 
+              mutate(dose_group = "10mg/kg"))%>%
+  bind_rows(as_tibble(ev(ID = 4851:4900, amt = 11,ii=24, addl=5, tinf=0.5))%>% 
+              mutate(dose_group = "11mg/kg"))%>%
+  bind_rows(as_tibble(ev(ID = 4901:4950, amt = 12,ii=24, addl=5, tinf=0.5))%>% 
+              mutate(dose_group = "12mg/kg"))%>%
+  arrange(ID) %>%
+  left_join(WT_data_ex) %>%
+  left_join(CREATCL_data_ex) %>%
+  left_join(SEX_data_ex) %>% 
+  mutate(amt = WT*amt, rate = amt/tinf) 
+
+set.seed(str_c(12,i))
+out_ex <- my_model_dapto %>% 
+  data_set(data_ev_ex) %>%
+  Req(DV, CL) %>%
+  mrgsim(end = 97, delta = 0.5)
+
+
+#Creation data simulation
+simul_dapto_ex <- as_tibble(out_ex) %>% left_join(data_ev_ex %>% select(ID, dose_group, WT, SEX, CREATCL), by = c("ID" = "ID")) 
+
+#Rassemblement des 2 fichiers et calcul auc avec effet du sexe
+simul_datpo_all <- simul_dapto %>% bind_rows(simul_dapto_ex) %>% 
+  mutate(dose = parse_number(dose_group)*WT,
+         auc = dose/CL)
+
+#Exclusion de 1% des plus basses et des plus elevees auc:  
+centile_1 <- quantile(simul_datpo_all$auc, 0.01)
+centile_99 <- quantile(simul_datpo_all$auc, 0.99)
+
+#Exclusion de 1% des plus basses et des plus elevees cmin:  
+centile_1_Cmin <- simul_datpo_all %>% filter(time==95.5) %>% select(DV) %>% summarize(centile_1_Cmin = quantile(DV, probs = .01))
+centile_99_Cmin <-  simul_datpo_all %>% filter(time==95.5) %>% select(DV) %>% summarize(centile_99_Cmin = quantile(DV, probs = .99))
+
+#Exclusion de 1% des plus basses et des plus elevees cmax:  
+centile_1_Cmax <- simul_datpo_all %>% filter(time==96.5) %>% select(DV) %>% summarize(centile_1_Cmax = quantile(DV, probs = .01))
+centile_99_Cmax <-  simul_datpo_all %>% filter(time==96.5) %>% select(DV) %>% summarize(centile_99_Cmax = quantile(DV, probs = .99))
+
+simul_datpo_all1 <- simul_datpo_all %>% 
+  filter(auc >= centile_1, auc <= centile_99) 
+
+##id cmin ot exclude
+id_cmin_exclude <- simul_datpo_all1 %>% 
+  filter(time==95.5 & c(DV<centile_1_Cmin$centile_1_Cmin|DV>centile_99_Cmin$centile_99_Cmin)) %>% 
+  select(ID)
+
+##id cmax ot exclude
+id_cmax_exclude <- simul_datpo_all1 %>% 
+  filter(time==96.5 & c(DV<centile_1_Cmax$centile_1_Cmax|DV>centile_99_Cmax$centile_99_Cmax)) %>% 
+  select(ID)
+  # selecitonner ID caracreristre par valeur max et les exclure
+  # filter(auc >= centile_1, auc <= centile_99) %>% 
+  # filter(auc >= centile_1, auc <= centile_99)
+
+simul_datpo_all1 <- simul_datpo_all1 %>% 
+  filter(!(ID %in% c(id_cmin_exclude$ID))) %>% 
+  filter(!(ID %in% c(id_cmax_exclude$ID)))
+#Cmin
+cmin <- simul_datpo_all1 %>% 
+  filter(time==95.5) %>%
+  group_by(dose_group) %>% 
+  summarise(median_cmin = median(DV))
+print(cmin)
+
+#Cmax
+cmax <- simul_datpo_all1 %>% 
+  filter(time==96.5) %>%
+  group_by(dose_group) %>% 
+  summarise(median_cmax = median(DV))
+print(cmax)
+
+auc <- simul_datpo_all1 %>% group_by(dose_group) %>% summarise(median_auc = median(auc))
+print(auc)
+
+#Simulations graphique
+simul_datpo_all1 %>% filter( between(time, 72, 96)) %>% ggplot(aes(x = time, y = DV, color = as.factor(SEX))) + geom_point(alpha = 0.5) + geom_line() + labs(x = "Time (h)", y = "Daptomycin concentration (mg/L)") + theme_bw() + theme(legend.position = "none")
+
+simul_datpo_all1 %>% distinct(ID, .keep_all = TRUE) %>% ggplot(aes(x = as.factor(SEX), y = auc)) +
+  geom_boxplot() + labs(x = "Sex", y = "Daptomycin AUC (mg*h/L)") + theme_bw() + theme(legend.position = "none") +
+  scale_y_continuous(trans = scales::pseudo_log_trans())
+
+simul_datpo_all1 %>% ggplot(aes(x = time, y = DV, color = as.factor(ID))) + geom_point() + geom_line() + labs(x = "Time (h)", y = "Daptomycin concentration (mg/L)") + 
+  theme_bw() + 
+  theme(legend.position = "none") 
+
+summary(simul_datpo_all1)
+
+metriques <- data.frame(cmin, cmax, auc) %>% select(-dose_group.1, -dose_group.2) %>% arrange(median_cmin)
+
+#Creation variable interet
+simul_datpo_all2 <- simul_datpo_all1 %>% filter(time==95.5) %>% mutate(effect = if_else(DV<24.3 & auc>666, 1,0))
+simul_datpo_all2 %>% group_by(effect, SEX) %>% count()
+# write.csv(simul_datpo_all2 , file = "data_ML_analysis_final121223.csv")
+```
+
+
+
+
+
+
+```{r rf dvorchick , cache=TRUE}
+#MACHINE LEARNING : Random forest 
+
+# analyse ml
+library(readr)
+data_ML_analysis_final <- simul_datpo_all2 %>% mutate(
+                                     id = str_c(ID, sep ="_"),
+                                     effect = as.factor(effect)
+                                   )
+
+#Data splitting
+library(tidymodels)
+data_ML_analysis_finalb <- data_ML_analysis_final %>% select(-auc,-time,  -DV, -CL, -ID)
+set.seed(1234)
+florence_split<- initial_split(data_ML_analysis_finalb, strata = effect)
+ml_train  <- training(florence_split )
+ml_test  <- testing(florence_split )
+
+#Pre processing 
+
+ml_rec  <- recipe(effect ~ ., data = ml_train) %>%
+  step_rm(id, dose_group) %>%
+  step_normalize(all_numeric_predictors()) 
+ml_rec_prep <-  prep(ml_rec )
+train_recipe <-juice(ml_rec_prep)
+
+
+#Model & workflow Random Forest 
+
+#Model
+rf_spec <- rand_forest(mode = "classification",
+                       mtry = tune(),
+                       trees = 1000,
+                       min_n = tune()
+) %>% set_engine("ranger", importance = "permutation")
+
+
+
+#Workflow model+recipe
+rf_wf <- workflow() %>%
+  add_recipe(ml_rec) %>%
+  add_model(rf_spec)
+
+#Hyperparameters
+set.seed(2345)
+folds <- vfold_cv(ml_train, strata = effect) #par defaut 10 fois
+
+
+library(finetune)
+set.seed(345)
+tune_rf <-
+  tune_race_anova(
+    rf_wf,
+    resamples = folds,
+    grid = 30,
+    control = control_race(verbose_elim = TRUE)
+  )
+
+#Selection of the best model
+
+#Choix du best model
+best_rf <- select_best(tune_rf, "accuracy")
+
+final_rf <- finalize_model(
+  rf_spec,
+  best_rf)
+
+final_rf
+
+#Finalize workflow and crossval
+
+#Finalize workflow
+final_wf_rf <- workflow() %>%
+  add_recipe(ml_rec) %>%
+  add_model(final_rf)
+
+#Resample
+set.seed(456)
+folds_cv <- vfold_cv(ml_train, strata = effect) #par defaut 10 fois
+
+#10 fold CV
+rf_rs<- fit_resamples(object = final_wf_rf, resamples = folds_cv, control = control_resamples(verbose=T, save_pred = T))
+
+#Perf resample
+rf_rs %>% collect_metrics()
+
+rf_rs%>% collect_predictions() %>% conf_mat(effect, .pred_class) %>%
+  autoplot(type = "heatmap")
+
+#Validation test
+
+#Last fit
+final_res <- final_wf_rf %>% #mettre wf meilleures perf
+  last_fit(florence_split)
+
+#Performances biais imprecision test
+final_res %>% collect_metrics()
+
+final_res %>% collect_predictions() %>% conf_mat(effect, .pred_class) %>%
+  autoplot(type = "heatmap") 
+
+
+library(vip)
+rf_fit <- extract_fit_parsnip(final_res)
+vip(rf_fit, geom = "point", num_features = 5)
+
+
+#Importance plot
+
+#Visualisation des résultats
+final_rf %>%
+  set_engine("ranger", importance = "permutation") %>%
+  fit(effect ~ .,
+      data = juice(ml_rec_prep)) %>%
+  vip::vip(geom = "col") + theme_bw()
+
+```
+
+
+```{r}
+#Fit workflow
+fit_workflow_rf <- fit(final_wf_rf, ml_train)
+ saveRDS(fit_workflow_rf, file = "rf_final_res_originale_filter_ss_temp_291223.rds")
+ 
+```
+
+# Analyse SVM
+
+```{r svm dvorchick , cache=TRUE}
+#Model & workflow SVM
+
+#Model
+svm_spec <- svm_linear(mode = "classification",
+                         cost = tune()
+                        # rbf_sigma = tune()
+                        ) %>% set_engine("kernlab")
+
+#Workflow model+recipe
+svm_wf <- workflow() %>%
+  add_recipe(ml_rec) %>%
+  add_model(svm_spec)
+
+#Hyperparameters
+set.seed(2345)
+folds <- vfold_cv(ml_train, strata = effect) #par defaut 10 fois
+
+
+library(finetune)
+set.seed(345)
+tune_svm <-
+  tune_race_anova(
+    svm_wf,
+    resamples = folds,
+    grid = 20,
+    control = control_race(verbose_elim = TRUE)
+  )
+
+#Selection of the best model
+
+#Choix du best model
+best_svm <- select_best(tune_svm, "accuracy")
+
+final_svm <- finalize_model(
+  svm_spec,
+  best_svm)
+
+final_svm
+
+#Finalize workflow and crossval
+
+#Finalize workflow
+final_wf_svm <- workflow() %>%
+  add_recipe(ml_rec) %>%
+  add_model(final_svm)
+
+#Resample
+set.seed(456)
+folds_cv <- vfold_cv(ml_train, strata = effect) #par defaut 10 fois
+
+#10 fold CV
+svm_rs<- fit_resamples(object = final_wf_svm, resamples = folds_cv, control = control_resamples(verbose=T, save_pred = T))
+
+#Perf resample
+svm_rs %>% collect_metrics()
+
+svm_rs%>% collect_predictions() %>% conf_mat(effect, .pred_class) %>%
+  autoplot(type = "heatmap")
+
+#Validation test
+
+#Last fit
+final_res <- final_wf_svm %>% #mettre wf meilleures perf
+  last_fit(florence_split)
+
+#Performances biais imprecision test
+final_res %>% collect_metrics()
+
+final_res %>% collect_predictions() %>% conf_mat(effect, .pred_class) %>%
+  autoplot(type = "heatmap") 
+
+
+```
+
+
+```{r}
+#Fit workflow
+fit_workflow_svm <- fit(final_wf_svm, ml_train)
+ saveRDS(fit_workflow_svm, file = "svm_final_res_originale_filter_ss_temp_291223.rds")
+ 
+```
+
+
+
+
+# Analyse Xgboost
+
+```{r xgb dvorchick , cache=TRUE}
+#Model & workflow SVM
+
+#Model
+xgb_spec <- boost_tree(mode = "classification",
+                        mtry = tune(),
+                        trees = tune(),
+                        min_n = tune(),
+                        tree_depth = tune(),
+                        learn_rate = tune(),
+                        sample_size = tune()
+                        ) %>% set_engine("xgboost", importance = "permutation")
+
+#Workflow model+recipe
+xgb_wf <- workflow() %>%
+  add_recipe(ml_rec) %>%
+  add_model(xgb_spec)
+
+#Hyperparameters
+set.seed(2345)
+folds <- vfold_cv(ml_train, strata = effect) #par defaut 10 fois
+
+
+library(finetune)
+set.seed(345)
+tune_xgb <-
+  tune_race_anova(
+    xgb_wf,
+    resamples = folds,
+    grid = 60,
+    control = control_race(verbose_elim = TRUE)
+  )
+
+#Selection of the best model
+
+#Choix du best model
+best_xgb <- select_best(tune_xgb, "accuracy")
+
+final_xgb <- finalize_model(
+  xgb_spec,
+  best_xgb)
+
+final_xgb
+
+#Finalize workflow and crossval
+
+#Finalize workflow
+final_wf_xgb <- workflow() %>%
+  add_recipe(ml_rec) %>%
+  add_model(final_xgb)
+
+#Resample
+set.seed(456)
+folds_cv <- vfold_cv(ml_train, strata = effect) #par defaut 10 fois
+
+#10 fold CV
+xgb_rs<- fit_resamples(object = final_wf_xgb, resamples = folds_cv, control = control_resamples(verbose=T, save_pred = T))
+
+#Perf resample
+xgb_rs %>% collect_metrics()
+
+xgb_rs%>% collect_predictions() %>% conf_mat(effect, .pred_class) %>%
+  autoplot(type = "heatmap")
+
+#Validation test
+
+#Last fit
+final_res <- final_wf_xgb %>% #mettre wf meilleures perf
+  last_fit(florence_split)
+
+#Performances biais imprecision test
+final_res %>% collect_metrics()
+
+final_res %>% collect_predictions() %>% conf_mat(effect, .pred_class) %>%
+  autoplot(type = "heatmap") 
+
+
+library(vip)
+xgb_fit <- extract_fit_parsnip(final_res)
+vip(xgb_fit, geom = "point", num_features = 5)
+
+
+#Importance plot
+
+#Visualisation des résultats
+final_xgb %>%
+  set_engine("xgboost", importance = "permutation") %>%
+  fit(effect ~ .,
+      data = juice(ml_rec_prep)) %>%
+  vip::vip(geom = "col") + theme_bw()
+
+```
+
+
+```{r}
+#Fit workflow
+fit_workflow_xgb <- fit(final_wf_xgb, ml_train)
+ saveRDS(fit_workflow_xgb, file = "xgb_final_res_originale_filter_ss_temp_291223.rds")
+ 
+```
+
+
+## glmnet
+
+```{r glm, cache = TRUE}
+#Model & workflow Random Forest 
+
+#Model
+# model definition, mixture = 1 --> lasso penalisation;  ridge mixture = 0
+glm_spec <-logistic_reg(
+  mode = "classification",
+  engine = "glmnet",
+  penalty = tune(),
+  mixture = 0
+)
+
+#Workflow model+recipe
+glm_wf <- workflow() %>%
+  add_recipe(ml_rec) %>%
+  add_model(glm_spec)
+
+#Hyperparameters
+set.seed(2345)
+folds <- vfold_cv(ml_train, strata = effect) #par defaut 10 fois
+
+
+library(finetune)
+set.seed(345)
+tune_glm <-
+  tune_race_anova(
+    glm_wf,
+    resamples = folds,
+    grid = 10,
+    control = control_race(verbose_elim = TRUE)
+  )
+
+#Selection of the best model
+
+#Choix du best model
+best_glm <- select_best(tune_glm, "accuracy")
+
+final_glm <- finalize_model(
+  glm_spec,
+  best_glm)
+
+final_glm
+
+#Finalize workflow and crossval
+
+#Finalize workflow
+final_wf_glm <- workflow() %>%
+  add_recipe(ml_rec) %>%
+  add_model(final_glm)
+
+#Resample
+set.seed(456)
+folds_cv <- vfold_cv(ml_train, strata = effect) #par defaut 10 fois
+
+#10 fold CV
+glm_rs<- fit_resamples(object = final_wf_glm, resamples = folds_cv, control = control_resamples(verbose=T, save_pred = T))
+
+#Perf resample
+glm_rs %>% collect_metrics()
+
+glm_rs%>% collect_predictions() %>% conf_mat(effect, .pred_class) %>%
+  autoplot(type = "heatmap")
+
+#Validation test
+
+#Last fit
+final_res <- final_wf_glm %>% #mettre wf meilleures perf
+  last_fit(florence_split)
+
+#Performances biais imprecision test
+final_res %>% collect_metrics()
+
+final_res %>% collect_predictions() %>% conf_mat(effect, .pred_class) %>%
+  autoplot(type = "heatmap") 
+
+
+library(vip)
+glm_fit <- extract_fit_parsnip(final_res)
+vip(glm_fit, geom = "point", num_features = 5)
+
+
+#Importance plot
+
+#Visualisation des résultats
+final_glm %>%
+  set_engine("glmnet", importance = "permutation") %>%
+  fit(effect ~ .,
+      data = juice(ml_rec_prep)) %>%
+  vip::vip(geom = "col") + theme_bw()
+
+```
+
+
+```{r}
+#Fit workflow
+fit_workflow_glm <- fit(final_wf_glm, ml_train)
+ saveRDS(fit_workflow_glm, file = "glm_final_res_originale_filter_ss_temp_291223.rds")
+ 
+```
+
+
+## best algorithm
+
+Le xgb fait un tout petit mieux que RF
+
+```{r}
+#Recherche du seuil optimal
+
+#Creation subset de patient 
+set.seed(1234)
+patient_subset <- data_ML_analysis_final %>% ungroup() %>% rename(AUC=auc,C0=DV, dose_vrai=dose) %>% dplyr::slice_sample(n=100)
+
+```
+
+
+```{r}
+#Recherche du seuil optimal
+
+#Chargement du xgb
+modele_xgb <- readRDS("C:/Users/flore/OneDrive/Bureau/Thèse/Final/Codes post these/030124/xgb_final_res_originale_filter_ss_temp_291223.rds")
+
+#modele_xgb <- fit_workflow_xgb
+#Boucle iterative avec les diffrentes probabilités
+dose_search = function(WT, CREATCL, SEX, dose=seq(4*WT, 15*WT, by=10))
+{
+  
+  for(dose_val in dose)
+{
+  tibble_data = tibble(id = "toto", dose_group = "4mg_kg",WT=WT, CREATCL=CREATCL, SEX=SEX, dose=dose_val)
+  
+  if(predict(modele_xgb, tibble_data, "prob")[[2]]> 0.80)
+    return(dose_val) }
+   }
+  
+doses_ML <- mapply(dose_search, CREATCL=patient_subset$CREATCL, WT=patient_subset$WT, SEX=patient_subset$SEX)
+
+vecteur_doses_ML <- unlist(lapply(doses_ML, function(x) if(is.null(x)) return(-1) else return(x)))
+tableau_donnees_seuil <-bind_cols(patient_subset, vecteur_doses_ML) %>% rename(dose_ML=...13) %>% filter(dose_ML > -1)
+
+#Evaluation des performances du seuil 
+t_seuil <- tableau_donnees_seuil %>% mutate(
+  dose_proposed = plyr::round_any(dose_ML,10),
+  dose_true =as.numeric(dose_vrai), 
+  event=case_when(AUC>666 & C0<=24.3 ~ "AUC/C0_cibles", 
+          AUC<666 & C0<=24.3 ~ "AUC_bad_C0_good", 
+          AUC>666 & C0>24.3 ~ "AUC_good_C0_bad", 
+          AUC<666 & C0>24.3 ~ "AUC_bad_C0_bad"),
+  AUC_ML = (AUC*dose_ML)/dose_true,
+  C0_ML = (C0*dose_ML)/dose_true)
+
+table_evaluation_seuil <- t_seuil %>% pivot_longer(cols = c( dose_true, dose_proposed), values_to =c("dose"), names_to = c("classe_dose")) %>%  pivot_longer(cols = c( AUC, AUC_ML), values_to =c("auc"), names_to = c("classe_auc")) %>%
+  pivot_longer(cols = c( C0, C0_ML), values_to =c("c0"), names_to = c("classe_c0")) %>% 
+  filter(classe_auc=="AUC"& classe_c0=="C0" & classe_dose=="dose_true" |classe_auc=="AUC_ML"& classe_c0=="C0_ML"& classe_dose=="dose_proposed") %>%
+  mutate(event=case_when(auc>666 & c0<=24.3 ~ "AUC/C0_cibles", 
+          auc<666 & c0<=24.3 ~ "AUC_bad_C0_good", 
+          auc>666 & c0>24.3 ~ "AUC_good_C0_bad", 
+          auc<666 & c0>24.3 ~ "AUC_bad_C0_bad"),
+         event_bin = if_else(event=="AUC/C0_cibles","AUC/C0_cibles","Autres"))
+ 
+
+ table_evaluation_seuil %>% group_by(classe_dose)  %>% summarise(prop = mean(event=="AUC/C0_cibles"), n=n())
+```
+```{r}
+#Recherche du seuil optimal avec proba max 
+
+modele_xgb <- readRDS("C:/Users/flore/OneDrive/Bureau/Thèse/Final/Codes post these/030124/xgb_final_res_originale_filter_ss_temp_291223.rds")
+
+dose_search = function(WT, CREATCL, SEX, dose=seq(4*WT, 15*WT, by=10))
+{
+  resdose=data.frame(dose=rep(NA,length(dose)), proba=rep(NA, length(dose)))
+  compt=1
+  for(dose_val in dose)
+{
+  tibble_data = tibble(id = "toto", dose_group = "4mg_kg",WT=WT, CREATCL=CREATCL, SEX=SEX, dose=dose_val)
+  proba_val=predict(modele_xgb, tibble_data, "prob")[[2]]
+  resdose$dose[compt]=dose_val
+  resdose$proba[compt]=proba_val
+  
+    compt=compt+1
+  }
+  
+inddose=which.max(resdose$proba)
+  return(resdose[inddose,])
+}
+
+doses_ML <- mapply(dose_search, CREATCL=patient_subset$CREATCL, WT=patient_subset$WT, SEX=patient_subset$SEX)
+
+vecteur_doses_ML <- unlist(lapply(doses_ML, function(x) if(is.null(x)) return(-1) else return(x))) 
+
+# Création d'une séquence de nombres pour les indices pairs (doses)
+indices_doses <- seq(1, length(vecteur_doses_ML), by = 2)
+
+# Création d'une séquence de nombres pour les indices impairs (probabilités)
+indices_proba <- seq(2, length(vecteur_doses_ML), by = 2)
+
+# Extraction des doses
+doses <- vecteur_doses_ML[indices_doses]
+
+# Extraction des probabilités
+probabilites <- vecteur_doses_ML[indices_proba]
+
+# Création d'un data frame avec les colonnes dose et probabilité
+resultat <- data.frame(dose = doses, proba = probabilites)
+
+tableau_donnees_seuil <-bind_cols(patient_subset, resultat) %>% rename(dose_ML=dose) %>% select(-proba)
+
+#Evaluation des performances du seuil 
+t_seuil <- tableau_donnees_seuil %>% mutate(
+  dose_proposed = plyr::round_any(dose_ML,10),
+  dose_true =as.numeric(dose_vrai), 
+  event=case_when(AUC>666 & C0<=24.3 ~ "AUC/C0_cibles", 
+          AUC<666 & C0<=24.3 ~ "AUC_bad_C0_good", 
+          AUC>666 & C0>24.3 ~ "AUC_good_C0_bad", 
+          AUC<666 & C0>24.3 ~ "AUC_bad_C0_bad"),
+  AUC_ML = (AUC*dose_ML)/dose_true,
+  C0_ML = (C0*dose_ML)/dose_true)
+
+table_evaluation_seuil <- t_seuil %>% pivot_longer(cols = c( dose_true, dose_proposed), values_to =c("dose"), names_to = c("classe_dose")) %>%  pivot_longer(cols = c( AUC, AUC_ML), values_to =c("auc"), names_to = c("classe_auc")) %>%
+  pivot_longer(cols = c( C0, C0_ML), values_to =c("c0"), names_to = c("classe_c0")) %>% 
+  filter(classe_auc=="AUC"& classe_c0=="C0" & classe_dose=="dose_true" |classe_auc=="AUC_ML"& classe_c0=="C0_ML"& classe_dose=="dose_proposed") %>%
+  mutate(event=case_when(auc>666 & c0<=24.3 ~ "AUC/C0_cibles", 
+          auc<666 & c0<=24.3 ~ "AUC_bad_C0_good", 
+          auc>666 & c0>24.3 ~ "AUC_good_C0_bad", 
+          auc<666 & c0>24.3 ~ "AUC_bad_C0_bad"),
+         event_bin = if_else(event=="AUC/C0_cibles","AUC/C0_cibles","Autres"))
+ 
+
+ table_evaluation_seuil %>% group_by(classe_dose)  %>% summarise(prop = mean(event=="AUC/C0_cibles"), n=n())
+
+```
+
+
+
+```{r}
+#Nettoyage tableau des patients reels
+ 
+library(dplyr)
+#Téléchargement des deux fichiers .csv
+Patients_test_AUC = read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/Codes/Patients pour tester ML/Patients_test_AUC.csv", sep=";")[,1:5] %>% rename(ID=ID)
+
+
+#Mediane, max, min des AUC et doses reelles
+Patients_test_AUC  %>% select(-ID, -TIME) %>% summarise(across(everything(), list(median = median, min = min, max = max)))
+
+Patients_test_autre = read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/Codes/Patients pour tester ML/autres_final.csv", sep=";", na.strings=".") %>% select(-17, -12, -13) 
+
+
+#Mediane, max, min des age, sexe, fonction renale 
+Patients_test_autre %>% select(ID, OCC, AGE:Sex) %>% distinct(ID, OCC, .keep_all = TRUE) %>% summarise(across(AGE:Sex, list(median = median, min = min, max = max)))
+
+Patients_test_autre %>% select(ID, OCC, AGE:Sex) %>% distinct(ID, OCC, .keep_all = TRUE) %>% summarise(sex_n = mean(Sex==1))
+
+#Nombre patients
+Patients_test_autre %>% select(ID, OCC, AGE:Sex) %>% distinct(ID, OCC, .keep_all = TRUE) %>% summarise(n = n())
+
+#n conc dispo pour calcul AUC
+Patients_test_autre %>% group_by(ID, OCC) %>% filter(is.na(AMOUNT)) %>% summarise(n = n()) %>% ungroup() %>% summarise(median = median(n), min = min(n), max = max(n))
+
+#Regroupement des deux tableaux 
+patients <- left_join(Patients_test_AUC, Patients_test_autre, by= c("OCC","ID")) %>% filter(!is.na(Y)) %>% rename(C0=Y, dose_vrai=AMOUNT.x, temps_prélèvement=TIME.y, SEX=Sex, CREATCL=CG, AUC=AUC_24) %>% select(-AMOUNT.y, -TINF, -EVID, -SS, -II, -AGE, -TIME.x, -Creat)
+
+
+```
+
+```{r}
+#Chargement du RF
+modele_xgb <- readRDS("C:/Users/flore/OneDrive/Bureau/Thèse/Final/Codes post these/030124/xgb_final_res_originale_filter_ss_temp_291223.rds")
+
+#Boucle iterative avec les diffrentes probabilités
+dose_search = function(WT, CREATCL, SEX, dose=seq(4*WT, 15*WT, by=10))
+{
+  
+  for(dose_val in dose)
+{
+  tibble_data = tibble(id = "toto", dose_group = "4mg_kg",WT=WT, CREATCL=CREATCL, SEX=SEX, dose=dose_val)
+  
+  if(predict(modele_xgb, tibble_data, "prob")[[2]]>0.60)
+    return(dose_val) }
+   }
+  
+
+doses_ML <- mapply(dose_search, CREATCL=(patients$CREATCL), WT=(patients$WT), SEX=(patients$SEX))
+
+vecteur_doses_ML<- unlist(lapply(doses_ML, function(x) if(is.null(x)) return(-1) else return(x)))
+tableau_donnees <-bind_cols(patients, vecteur_doses_ML) %>% rename(dose_ML=...10) %>% filter(dose_ML > -1)
+     
+```
+
+
+
+```{r}
+#Ajout de la colonne evenement au tableau de donnees, des AUC et C0 estimes par produit en croix
+
+library(dplyr)
+
+t <- tableau_donnees %>% mutate(
+  proposed_dose = plyr::round_any(dose_ML,10),
+  true_dose =as.numeric(dose_vrai), 
+  event=case_when(AUC>666 & C0<=24.3 ~ "AUC>666 & C0<24.3 mg/L", 
+          AUC<666 & C0<=24.3 ~ "AUC<666 & C0<24.3 mg/L", 
+          AUC>666 & C0>24.3 ~ "AUC>666 & C0>24.3 mg/L", 
+          AUC<666 & C0>24.3 ~ "AUC<666 & C0>24.3 mg/L"),
+  AUC_ML = (AUC*dose_ML)/true_dose,
+  C0_ML = (C0*dose_ML)/true_dose)
+
+```
+
+
+```{r}
+#Comparaison des patients reels avec les patients simules
+
+library(tableone)
+
+#Patients reels de Sylvain Goutelle 
+true <- patients %>% mutate(effect = case_when(AUC>666 & C0<=24.3 ~ 1, 
+          AUC<666 & C0<=24.3 ~ 0, 
+          AUC>666 & C0>24.3 ~ 0, 
+          AUC<666 & C0>24.3 ~ 0)) %>%
+  mutate(effect1 = case_when(AUC>666 & C0<=24.3 ~ "AUC>666 & C0<24.3 mg/L", 
+          AUC<666 & C0<=24.3 ~ "AUC<666 & C0<24.3 mg/L", 
+          AUC>666 & C0>24.3 ~ "AUC>666 & C0>24.3 mg/L", 
+          AUC<666 & C0>24.3 ~ "AUC<666 & C0>24.3 mg/L")) %>% rename(DOSE=dose_vrai, EFFECT=effect, EFFECT1=effect1) %>% select(SEX, DOSE, AUC, C0,CREATCL, WT, EFFECT, EFFECT1) %>% ungroup() %>% mutate(CLASS='true')
+
+
+#Patients simulés 
+simulated <- data_ML_analysis_final %>% mutate(effect1 = case_when(auc>666 & DV<=24.3 ~ "AUC>666 & C0<24.3 mg/L", 
+          auc<666 & DV<=24.3 ~ "AUC<666 & C0<24.3 mg/L", 
+          auc>666 & DV>24.3 ~ "AUC>666 & C0>24.3 mg/L", 
+          auc<666 & DV>24.3 ~ "AUC<666 & C0>24.3 mg/L")) %>% rename(DOSE=dose, EFFECT=effect, C0=DV, AUC=auc, EFFECT1=effect1) %>% select(SEX, DOSE, AUC, C0,CREATCL, WT, EFFECT, EFFECT1) %>%
+mutate(CLASS='simulated') 
+
+
+#Groupement des deux groupes et stratification
+tab <-rbind(simulated,true)
+
+myVars <- c("SEX", "DOSE", "AUC", "C0", "CREATCL", "WT", "EFFECT", "EFFECT1")
+catVars <-c("EFFECT", "SEX", "EFFECT1")
+tab2<- CreateTableOne(vars=myVars, strata="CLASS", data=tab, factorVars = catVars)
+tab3<-print(tab2, nonnormal = c("SEX", "DOSE", "AUC", "C0", "CREATCL", "WT", "EFFECT", "EFFECT1"), showAllLevels = TRUE, minMax=FALSE, printToggle = FALSE)
+#write.csv(tab3, file = "tableau_comparaison301123.csv")
+
+```
+
+
+```{r}
+#Test du Chi2
+
+table_evaluation <- t %>% pivot_longer(cols = c( true_dose, proposed_dose), values_to =c("dose"), names_to = c("classe_dose")) %>%  pivot_longer(cols = c( AUC, AUC_ML), values_to =c("auc"), names_to = c("classe_auc")) %>%
+  pivot_longer(cols = c( C0, C0_ML), values_to =c("c0"), names_to = c("classe_c0")) %>% 
+  filter(classe_auc=="AUC"& classe_c0=="C0" & classe_dose=="true_dose" |classe_auc=="AUC_ML"& classe_c0=="C0_ML"& classe_dose=="proposed_dose") %>%
+  mutate(event=case_when(auc>666 & c0<=24.3 ~ "AUC>666 & C0<24.3 mg/L", 
+          auc<666 & c0<=24.3 ~ "AUC<666 & C0<24.3 mg/L", 
+          auc>666 & c0>24.3 ~ "AUC>666 & C0>24.3 mg/L", 
+          auc<666 & c0>24.3 ~ "AUC<666 & C0>24.3 mg/L"),
+         event_bin = if_else(event=="AUC>666 & C0<24.3 mg/L","AUC>666 & C0<24.3 mg/L","Others"))
+
+table_evaluation %>% group_by(classe_dose)  %>% summarise(prop = mean(event=="AUC>666 & C0<24.3 mg/L"), n=n())
+
+M =table(table_evaluation$classe_dose, table_evaluation$event_bin)
+chisq.test(M) # Prints test summary
+```
+
+```{r}
+#Graphiques 2 : Proportion des evenements en fonction de doses vraies ou doses_ML
+
+ggbivariate(table_evaluation, outcome = "event", explanatory = c("classe_dose"), rowbar_args = list(size = 4)) + scale_fill_manual(breaks = c("AUC<666 & C0<24.3 mg/L", "AUC>666 & C0>24.3 mg/L", "AUC<666 & C0>24.3 mg/L", "AUC>666 & C0<24.3 mg/L"), values=c("red","#FFCC00", "#FF9900", "lightgreen")) + labs(fill = "Event :") 
+ 
+  
+ggbivariate(table_evaluation, outcome = "event_bin", explanatory = c("classe_dose")) + scale_fill_manual(breaks = c("AUC>666 & C0<24.3 mg/L", "Others"), values=c("lightgreen","#FFCC00")) + labs(fill = "Event :")
+
+```
+```{r}
+#Test de algorithme final 
+#Women
+
+test_woman_1 <- data.frame("ID"=c(1:169), "CREATCL"= c(30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150), "SEX"= c(0), "WT"=c(
+  50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 
+  60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60,     
+  70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 
+  80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 
+  90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 
+  100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 
+  110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 
+  120, 120, 120, 120, 120, 120, 120, 120, 120,120, 120, 120, 120,  
+  130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 
+  140, 140, 140, 140, 140, 140, 140, 140, 140, 140, 140, 140, 140, 
+  145, 145, 145, 145, 145, 145, 145, 145, 145, 145, 145, 145, 145, 
+  151, 151, 151, 151, 151, 151, 151, 151, 151, 151, 151, 151, 151,
+  150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150)) 
+
+modele_xgb <- readRDS("C:/Users/flore/OneDrive/Bureau/Thèse/Final/Codes post these/030124/xgb_final_res_originale_filter_ss_temp_291223.rds")
+
+dose_search_woman = function(WT, CREATCL, SEX, dose=seq(4*WT, 15*WT, by=10))
+{
+  
+  for(dose_val in dose)
+{
+  tibble_data = tibble(id = "toto", dose_group = "4mg_kg",WT=WT, CREATCL=CREATCL, SEX=SEX, dose=dose_val)
+  
+  if(predict(modele_xgb, tibble_data, "prob")[[2]]>0.60)
+    return(dose_val) }
+   }
+
+test_woman_2 <- mapply(dose_search_woman, CREATCL=(test_woman_1$CREATCL), WT=(test_woman_1$WT), SEX=(test_woman_1$SEX))
+
+vecteur_doses_ML_women<- unlist(lapply(test_woman_2, function(x) if(is.null(x)) return(NA) else return(x)))
+
+tableau_donnees_women <- bind_cols(test_woman_1, signif(vecteur_doses_ML_women,2)) %>% rename(dose_ML_women=...5) %>% select(-SEX,-ID)
+
+
+tableau_donnees_women <- pivot_longer(tableau_donnees_women, WT)
+tableau_donnees_women <- pivot_wider(tableau_donnees_women, names_from=CREATCL, values_from = dose_ML_women) 
+print(tableau_donnees_women)
+
+
+
+#write.csv2(tableau_donnees_women,file = 'test_women150124.csv') 
+
+
+```
+
+```{r}
+#Test de algorithme final 
+#Men
+
+test_man_1 <- data.frame("ID"=c(1:169), "CREATCL"= c(30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150), "SEX"= c(1), "WT"=c(
+  50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 
+  60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60, 60,     
+  70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70, 
+  80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 80, 
+  90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 
+  100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 
+  110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 110, 
+  120, 120, 120, 120, 120, 120, 120, 120, 120,120, 120, 120, 120,  
+  130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 130, 
+  140, 140, 140, 140, 140, 140, 140, 140, 140, 140, 140, 140, 140, 
+  145, 145, 145, 145, 145, 145, 145, 145, 145, 145, 145, 145, 145, 
+  151, 151, 151, 151, 151, 151, 151, 151, 151, 151, 151, 151, 151,
+  150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150, 150)) 
+
+
+modele_xgb <- readRDS("C:/Users/flore/OneDrive/Bureau/Thèse/Final/Codes post these/030124/xgb_final_res_originale_filter_ss_temp_291223.rds")
+
+dose_search_man = function(WT, CREATCL, SEX, dose=seq(4*WT, 15*WT, by=10))
+{
+  
+  for(dose_val in dose)
+{
+  tibble_data = tibble(id = "toto", dose_group = "4mg_kg",WT=WT, CREATCL=CREATCL, SEX=SEX, dose=dose_val)
+  
+  if(predict(modele_xgb, tibble_data, "prob")[[2]]>0.60)
+    return(dose_val) }
+   }
+
+test_man_2 <- mapply(dose_search_man, CREATCL=(test_man_1$CREATCL), WT=(test_man_1$WT), SEX=(test_man_1$SEX))
+
+vecteur_doses_ML_men<- unlist(lapply(test_man_2, function(x) if(is.null(x)) return(NA) else return(x)))
+
+
+tableau_donnees_men <- bind_cols(test_man_1, signif(vecteur_doses_ML_men,2)) %>% rename(dose_ML_men=...5) %>% select(-SEX,-ID)
+
+
+tableau_donnees_men <- pivot_longer(tableau_donnees_men, WT)
+tableau_donnees_men <- pivot_wider(tableau_donnees_men, names_from=CREATCL, values_from = dose_ML_men) 
+print(tableau_donnees_men)
+
+
+#write.csv2(tableau_donnees_men,file= 'test_finalmen150124.csv') 
+```
+
+```{r}
+#Graphique outliers (1, 99th)
+
+outliers <- anti_join(simul_datpo_all, simul_datpo_all1, by = "ID") 
+
+outliers %>% ggplot(aes(x = time, y = DV, color = as.factor(ID))) + geom_point() + geom_line() + labs(x = "Time (h)", y = "Daptomycin concentration (mg/L)") + 
+  theme_bw() + 
+  theme(legend.position = "none") 
+
+#Performance du ML sur les outliers
+
+outliers_ML <- outliers %>% filter(time==95.5) %>% mutate(effect = if_else(DV<24.3 & auc>666, 1,0)) %>% rename(dose_vrai_outliers=dose) %>% rename(AUC=auc) %>% rename (C0=DV)
+print(outliers_ML)
+
+#Chargement du ML
+modele_xgb <- readRDS("C:/Users/flore/OneDrive/Bureau/Thèse/Final/Codes post these/030124/xgb_final_res_originale_filter_ss_temp_291223.rds")
+
+#Boucle iterative avec les diffrentes probabilités
+dose_search = function(WT, CREATCL, SEX, dose=seq(4*WT, 15*WT, by=10))
+{
+  
+  for(dose_val in dose)
+{
+  tibble_data = tibble(id = "toto", dose_group = "4mg_kg",WT=WT, CREATCL=CREATCL, SEX=SEX, dose=dose_val)
+  
+  if(predict(modele_xgb, tibble_data, "prob")[[2]]>0.60)
+    return(dose_val) }
+   }
+  
+
+dose_outliers <- mapply(dose_search, CREATCL=(outliers_ML$CREATCL), WT=(outliers_ML$WT), SEX=(outliers_ML$SEX))
+
+vecteur_doses_outliers<- unlist(lapply(dose_outliers, function(x) if(is.null(x)) return(-1) else return(x)))
+tableau_donnees_outML <-bind_cols(outliers_ML, vecteur_doses_outliers) %>% rename(dose_outliers=...12) %>% filter(dose_outliers > -1)
+print(tableau_donnees_outML)
+
+#Ajout de la colonne evenement au tableau de donnees, des AUC et C0 estimes par produit en croix
+
+library(dplyr)
+
+t_outML <- tableau_donnees_outML %>% mutate(
+  proposed_dose = plyr::round_any(dose_outliers,10),
+  true_dose =as.numeric(dose_vrai_outliers), 
+  event=case_when(AUC>666 & C0<=24.3 ~ "AUC>666 & C0<24.3 mg/L", 
+          AUC<666 & C0<=24.3 ~ "AUC<666 & C0<24.3 mg/L", 
+          AUC>666 & C0>24.3 ~ "AUC>666 & C0>24.3 mg/L", 
+          AUC<666 & C0>24.3 ~ "AUC<666 & C0>24.3 mg/L"),
+  AUC_ML = (AUC*dose_outliers)/true_dose,
+  C0_ML = (C0*dose_outliers)/true_dose)
+
+#Test du Chi2
+
+table_evaluation_outML <- t_outML %>% pivot_longer(cols = c( true_dose, proposed_dose), values_to =c("dose"), names_to = c("classe_dose")) %>%  pivot_longer(cols = c( AUC, AUC_ML), values_to =c("auc"), names_to = c("classe_auc")) %>%
+  pivot_longer(cols = c( C0, C0_ML), values_to =c("c0"), names_to = c("classe_c0")) %>% 
+  filter(classe_auc=="AUC"& classe_c0=="C0" & classe_dose=="true_dose" |classe_auc=="AUC_ML"& classe_c0=="C0_ML"& classe_dose=="proposed_dose") %>%
+  mutate(event=case_when(auc>666 & c0<=24.3 ~ "AUC>666 & C0<24.3 mg/L", 
+          auc<666 & c0<=24.3 ~ "AUC<666 & C0<24.3 mg/L", 
+          auc>666 & c0>24.3 ~ "AUC>666 & C0>24.3 mg/L", 
+          auc<666 & c0>24.3 ~ "AUC<666 & C0>24.3 mg/L"),
+         event_bin = if_else(event=="AUC>666 & C0<24.3 mg/L","AUC>666 & C0<24.3 mg/L","Others"))
+
+table_evaluation_outML %>% group_by(classe_dose)  %>% summarise(prop = mean(event=="AUC>666 & C0<24.3 mg/L"), n=n())
+
+M =table(table_evaluation_outML$classe_dose, table_evaluation_outML$event_bin)
+chisq.test(M) # Prints test summary
+
+
+#Graphiques 2 : Proportion des evenements en fonction de doses vraies ou doses_ML
+
+ggbivariate(table_evaluation_outML, outcome = "event", explanatory = c("classe_dose"), rowbar_args = list(size = 4)) + scale_fill_manual(breaks = c("AUC<666 & C0<24.3 mg/L", "AUC>666 & C0>24.3 mg/L", "AUC<666 & C0>24.3 mg/L", "AUC>666 & C0<24.3 mg/L"), values=c("red","#FFCC00", "#FF9900", "lightgreen")) + labs(fill = "Event :") 
+ 
+  
+ggbivariate(table_evaluation_outML, outcome = "event_bin", explanatory = c("classe_dose")) + scale_fill_manual(breaks = c("AUC>666 & C0<24.3 mg/L", "Others"), values=c("lightgreen","#FFCC00")) + labs(fill = "Event :")
+
+
+
+#Performance de la PK sur les outliers
+
+outliers_PK <- outliers %>% filter(time==95.5) %>% mutate(effect = if_else(DV<24.3 & auc>666, 1,0)) %>% rename(dose_vrai_outliers=dose) %>% rename(AUC=auc) %>% rename (C0=DV)
+print(outliers_PK)
+
+#Separation hommes et femmes outliers en 2 tableaux distincts
+f_outliers <- outliers_PK %>% filter(SEX==0) #femmes
+h_outliers <- outliers_PK %>% filter(SEX==1) #hommes
+
+#Chargement des abaques de PKPOP hommes et femmes (pas de dose=NA)
+nomf <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/nomf.csv", sep=";") #femmes
+nomh <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/nomh.csv", sep=";") #hommes
+femme <- nomf %>% mutate(SEX=0) %>% rename(WT=WEIGHT, CREATCL=CCR) %>% drop_na(dose)
+homme <- nomh %>% mutate(SEX=1) %>% rename(WT=WEIGHT, CREATCL=CCR) %>% drop_na(dose)
+
+# Interpolation bivariee non lineaire : estimation de la dose des patients outliers par les abaques de PKPOP 
+
+library(akima)
+
+#FEMMES
+
+# Initialisation du vecteur pour stocker les doses estimees
+doses_estimees_f <- numeric(length = nrow(f_outliers))
+
+# Boucle pour estimer la dose pour chaque couple de poids et de clairance de creatinine
+for (i in seq_len(nrow(f_outliers))) {
+  interp_result <- interp(x = femme$WT, y = femme$CREATCL, z = femme$dose, xo = f_outliers$WT[i], yo = f_outliers$CREATCL[i], linear = FALSE)
+  doses_estimees_f[i] <- interp_result$z
+}
+
+# Afficher les doses estimees pour chaque couple
+doses_estimees_f
+patients_f_PK <- bind_cols(f_outliers, doses_estimees_f) %>% rename(dose_estimee_PKPOP=...12) %>% filter(!is.na(dose_estimee_PKPOP))
+
+#HOMMES
+
+# Initialisation du vecteur pour stocker les doses estimees
+doses_estimees_h <- numeric(length = nrow(h_outliers))
+
+# Boucle pour estimer la dose pour chaque couple de poids et de clairance de créatinine
+for (i in seq_len(nrow(h_outliers))) {
+  interp_result <- interp(x = homme$WT, y = homme$CREATCL, z = homme$dose, xo = h_outliers$WT[i], yo = h_outliers$CREATCL[i], linear = FALSE)
+  doses_estimees_h[i] <- interp_result$z
+}
+
+# Afficher les doses estimées pour chaque couple
+doses_estimees_h
+patients_h_PK <- bind_cols(h_outliers, doses_estimees_h) %>%rename(dose_estimee_PKPOP=...12) %>% filter(!is.na(dose_estimee_PKPOP))
+
+#Reunion des doses estimees homme et femme
+dosePK <- rbind(patients_f_PK, patients_h_PK) 
+
+dosePK <- dosePK[order(dosePK$ID),]
+view(dosePK)
+
+#Ajout de la colonne evenement au tableau de donnees, des AUC et C0 estimes par produit en croix
+
+library(dplyr)
+
+t_outPK <- dosePK %>% mutate(
+  proposed_dose = plyr::round_any(dose_estimee_PKPOP,10),
+  true_dose =as.numeric(dose_vrai_outliers), 
+  event=case_when(AUC>666 & C0<=24.3 ~ "AUC>666 & C0<24.3 mg/L", 
+          AUC<666 & C0<=24.3 ~ "AUC<666 & C0<24.3 mg/L", 
+          AUC>666 & C0>24.3 ~ "AUC>666 & C0>24.3 mg/L", 
+          AUC<666 & C0>24.3 ~ "AUC<666 & C0>24.3 mg/L"),
+  AUC_PK = (AUC*dose_estimee_PKPOP)/true_dose,
+  C0_PK = (C0*dose_estimee_PKPOP)/true_dose)
+print(dosePK)
+#Test du Chi2
+
+table_evaluation_outPK <- t_outPK %>% pivot_longer(cols = c( true_dose, proposed_dose), values_to =c("dose"), names_to = c("classe_dose")) %>%  pivot_longer(cols = c( AUC, AUC_PK), values_to =c("auc"), names_to = c("classe_auc")) %>%
+  pivot_longer(cols = c( C0, C0_PK), values_to =c("c0"), names_to = c("classe_c0")) %>% 
+  filter(classe_auc=="AUC"& classe_c0=="C0" & classe_dose=="true_dose" |classe_auc=="AUC_PK"& classe_c0=="C0_PK"& classe_dose=="proposed_dose") %>%
+  mutate(event=case_when(auc>666 & c0<=24.3 ~ "AUC>666 & C0<24.3 mg/L", 
+          auc<666 & c0<=24.3 ~ "AUC<666 & C0<24.3 mg/L", 
+          auc>666 & c0>24.3 ~ "AUC>666 & C0>24.3 mg/L", 
+          auc<666 & c0>24.3 ~ "AUC<666 & C0>24.3 mg/L"),
+         event_bin = if_else(event=="AUC>666 & C0<24.3 mg/L","AUC>666 & C0<24.3 mg/L","Others"))
+
+table_evaluation_outPK %>% group_by(classe_dose)  %>% summarise(prop = mean(event=="AUC>666 & C0<24.3 mg/L"), n=n())
+
+M = table(table_evaluation_outPK$classe_dose, table_evaluation_outPK$event_bin)
+chisq.test(M) # Prints test summary
+
+#Graphiques 2 : Proportion des evenements en fonction de doses vraies ou doses_PK
+
+ggbivariate(table_evaluation_outPK, outcome = "event", explanatory = c("classe_dose"), rowbar_args = list(size = 3)) + scale_fill_manual(breaks = c("AUC<666 & C0<24.3 mg/L", "AUC>666 & C0>24.3 mg/L", "AUC<666 & C0>24.3 mg/L", "AUC>666 & C0<24.3 mg/L"), values=c("red","#FFCC00", "#FF9900", "lightgreen")) + labs(fill = "Event :") 
+
+  
+ggbivariate(table_evaluation_outPK, outcome = "event_bin", explanatory = c("classe_dose")) + scale_fill_manual(breaks = c("AUC>666 & C0<24.3 mg/L", "Others"), values=c("lightgreen","#FFCC00")) + labs(fill = "Event :")
+
+
+```
+
+# Search of the best dose for test set 
+```{r}
+data_ML_analysis_finalb <- data_ML_analysis_final %>% select(-CL, -ID)
+set.seed(1234)
+florence_split<- initial_split(data_ML_analysis_finalb, strata = effect)
+ml_train  <- training(florence_split )
+ml_test  <- testing(florence_split )
+ml_test_vrai <- ml_test %>% rename(dose_vrai=dose, AUC=auc, C0=DV)
+
+#Chargement du RF
+modele_xgb <- readRDS("C:/Users/flore/OneDrive/Bureau/Thèse/Final/Codes post these/030124/xgb_final_res_originale_filter_ss_temp_291223.rds")
+
+#Boucle iterative avec les diffrentes probabilités
+dose_search = function(WT, CREATCL, SEX, dose=seq(4*WT, 15*WT, by=10))
+{
+  
+  for(dose_val in dose)
+{
+  tibble_data = tibble(id = "toto", dose_group = "4mg_kg",WT=WT, CREATCL=CREATCL, SEX=SEX, dose=dose_val)
+  
+  if(predict(modele_xgb, tibble_data, "prob")[[2]]>0.60)
+    return(dose_val) }
+   }
+  
+
+doses_ML <- mapply(dose_search, CREATCL=(ml_test_vrai$CREATCL), WT=(ml_test_vrai$WT), SEX=(ml_test_vrai$SEX))
+
+vecteur_doses_ML<- unlist(lapply(doses_ML, function(x) if(is.null(x)) return(-1) else return(x)))
+tableau_donnees <-bind_cols(ml_test_vrai, vecteur_doses_ML) %>% rename(dose_ML_test=...11) %>% filter(dose_ML_test > -1)
+
+
+#Ajout de la colonne evenement au tableau de donnees, des AUC et C0 estimes par produit en croix
+
+library(dplyr)
+
+t <- tableau_donnees %>% mutate(
+  proposed_dose = plyr::round_any(dose_ML_test,10),
+  true_dose =as.numeric(dose_vrai), 
+  event=case_when(AUC>666 & C0<=24.3 ~ "AUC>666 & C0<24.3 mg/L", 
+          AUC<666 & C0<=24.3 ~ "AUC<666 & C0<24.3 mg/L", 
+          AUC>666 & C0>24.3 ~ "AUC>666 & C0>24.3 mg/L", 
+          AUC<666 & C0>24.3 ~ "AUC<666 & C0>24.3 mg/L"),
+  AUC_ML = (AUC*dose_ML_test)/true_dose,
+  C0_ML = (C0*dose_ML_test)/true_dose)
+
+
+#Test du Chi2
+
+table_evaluation <- t %>% pivot_longer(cols = c( true_dose, proposed_dose), values_to =c("dose"), names_to = c("classe_dose")) %>%  pivot_longer(cols = c( AUC, AUC_ML), values_to =c("auc"), names_to = c("classe_auc")) %>%
+  pivot_longer(cols = c( C0, C0_ML), values_to =c("c0"), names_to = c("classe_c0")) %>% 
+  filter(classe_auc=="AUC"& classe_c0=="C0" & classe_dose=="true_dose" |classe_auc=="AUC_ML"& classe_c0=="C0_ML"& classe_dose=="proposed_dose") %>%
+  mutate(event=case_when(auc>666 & c0<=24.3 ~ "AUC>666 & C0<24.3 mg/L", 
+          auc<666 & c0<=24.3 ~ "AUC<666 & C0<24.3 mg/L", 
+          auc>666 & c0>24.3 ~ "AUC>666 & C0>24.3 mg/L", 
+          auc<666 & c0>24.3 ~ "AUC<666 & C0>24.3 mg/L"),
+         event_bin = if_else(event=="AUC>666 & C0<24.3 mg/L","AUC>666 & C0<24.3 mg/L","Others"))
+
+table_evaluation %>% group_by(classe_dose)  %>% summarise(prop = mean(event=="AUC>666 & C0<24.3 mg/L"), n=n())
+
+M =table(table_evaluation$classe_dose, table_evaluation$event_bin)
+chisq.test(M) # Prints test summary
+
+#Graphiques 2 : Proportion des evenements en fonction de doses vraies ou doses_ML
+
+ggbivariate(table_evaluation, outcome = "event", explanatory = c("classe_dose"), rowbar_args = list(size = 4)) + scale_fill_manual(breaks = c("AUC<666 & C0<24.3 mg/L", "AUC>666 & C0>24.3 mg/L", "AUC<666 & C0>24.3 mg/L", "AUC>666 & C0<24.3 mg/L"), values=c("red","#FFCC00", "#FF9900", "lightgreen")) + labs(fill = "Event :") 
+ 
+  
+ggbivariate(table_evaluation, outcome = "event_bin", explanatory = c("classe_dose")) + scale_fill_manual(breaks = c("AUC>666 & C0<24.3 mg/L", "Others"), values=c("lightgreen","#FFCC00")) + labs(fill = "Event :")
+ggsave("dose_ml_base_test.pdf")
+```
+
+# NOMOGRAMME PMETRICS
+
+
+#NOMOGRAMME HOMMES
+
+```{r}
+
+#Chargement des packages 
+library(readr)
+library(matrixStats)
+library(tidyverse)
+
+
+#Telechargement des probabilites d'AUC>666 pour chaque posologie (mg/kg)
+
+H_AUC_4 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/4H_AUC.csv", sep=";") %>% rename("p.auc.4"=prop.success)
+H_AUC_5 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/5H_AUC.csv", sep=";") %>% rename("p.auc.5"=prop.success) 
+H_AUC_6 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/6H_AUC.csv", sep=";") %>% rename("p.auc.6"=prop.success)   
+H_AUC_7 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/7H_AUC.csv", sep=";") %>% rename("p.auc.7"=prop.success) 
+H_AUC_8 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/8H_AUC.csv", sep=";") %>% rename("p.auc.8"=prop.success) 
+H_AUC_9 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/9H_AUC.csv", sep=";") %>% rename("p.auc.9"=prop.success) 
+H_AUC_10 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/10H_AUC.csv", sep=";") %>% rename("p.auc.10"=prop.success)
+H_AUC_11 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/11H_AUC.csv", sep=";") %>% rename("p.auc.11"=prop.success)
+H_AUC_12 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/12H_AUC.csv", sep=";") %>% rename("p.auc.12"=prop.success)
+H_AUC_13 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/13H_AUC.csv", sep=";") %>% rename("p.auc.13"=prop.success)
+H_AUC_14 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/14H_AUC.csv", sep=";") %>% rename("p.auc.14"=prop.success)
+H_AUC_15 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/15H_AUC.csv", sep=";") %>% rename("p.auc.15"=prop.success)
+
+
+#Telechargement des probabilites C0>24,3 pour chaque posologie (mg/kg)
+
+H_C0_4 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/4H_C0.csv", sep=";") %>% rename("p.C0.4"=prop.success) %>% select(-simnum) 
+H_C0_5 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/5H_C0.csv", sep=";") %>% rename("p.C0.5"=prop.success) %>% select(-simnum)
+H_C0_6 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/6H_C0.csv", sep=";") %>% rename("p.C0.6"=prop.success) %>% select(-simnum) 
+H_C0_7 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/7H_C0.csv", sep=";") %>% rename("p.C0.7"=prop.success) %>% select(-simnum) 
+H_C0_8 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/8H_C0.csv", sep=";") %>% rename("p.C0.8"=prop.success) %>% select(-simnum)
+H_C0_9 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/9H_C0.csv", sep=";") %>% rename("p.C0.9"=prop.success) %>% select(-simnum) 
+H_C0_10 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/10H_C0.csv", sep=";") %>% rename("p.C0.10"=prop.success) %>% select(-simnum)
+H_C0_11 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/11H_C0.csv", sep=";") %>% rename("p.C0.11"=prop.success) %>% select(-simnum) 
+H_C0_12 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/12H_C0.csv", sep=";") %>% rename("p.C0.12"=prop.success) %>% select(-simnum) 
+H_C0_13 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/13H_C0.csv", sep=";") %>% rename("p.C0.13"=prop.success) %>% select(-simnum) 
+H_C0_14 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/14H_C0.csv", sep=";") %>% rename("p.C0.14"=prop.success) %>% select(-simnum) 
+H_C0_15 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/15H_C0.csv", sep=";") %>% rename("p.C0.15"=prop.success) %>% select(-simnum) 
+
+
+#Accolement des tableaux des probabilites de C0 et AUC pour chaque posologie (mg/kg)
+#Si la proba d'avoir C0>24,3 est inferieure a 0,4 on considere que la posologie est utilisable (on selectionne les lignes utilisables)  
+
+Dose_4mg <- bind_cols(H_AUC_4, H_C0_4) %>% mutate(utilisable= ifelse(p.C0.4<0.4, 1, 0)) %>% filter(utilisable==1) 
+Dose_5mg <- bind_cols(H_AUC_5, H_C0_5) %>% mutate(utilisable= ifelse(p.C0.5<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_6mg <- bind_cols(H_AUC_6, H_C0_6) %>% mutate(utilisable= ifelse(p.C0.6<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_7mg <- bind_cols(H_AUC_7, H_C0_7) %>% mutate(utilisable= ifelse(p.C0.7<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_8mg <- bind_cols(H_AUC_8, H_C0_8) %>% mutate(utilisable= ifelse(p.C0.8<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_9mg <- bind_cols(H_AUC_9, H_C0_9) %>% mutate(utilisable= ifelse(p.C0.9<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_10mg <- bind_cols(H_AUC_10, H_C0_10) %>% mutate(utilisable= ifelse(p.C0.10<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_11mg <- bind_cols(H_AUC_11, H_C0_11) %>% mutate(utilisable= ifelse(p.C0.11<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_12mg <- bind_cols(H_AUC_12, H_C0_12) %>% mutate(utilisable= ifelse(p.C0.12<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_13mg <- bind_cols(H_AUC_13, H_C0_13) %>% mutate(utilisable= ifelse(p.C0.13<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_14mg <- bind_cols(H_AUC_14, H_C0_14) %>% mutate(utilisable= ifelse(p.C0.14<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_15mg <- bind_cols(H_AUC_15, H_C0_15) %>% mutate(utilisable= ifelse(p.C0.15<0.4, 1, 0)) %>% filter(utilisable==1)
+
+
+#On accole tous les tableaux des posologies avec left joint() par patient (by=simnum):  
+
+test1 <- left_join(Dose_4mg, Dose_5mg, by=c("simnum"))
+test2 <- left_join(test1, Dose_6mg, by=c("simnum"))
+test3 <- left_join(test2, Dose_7mg, by=c("simnum"))
+test4 <- left_join(test3, Dose_8mg, by=c("simnum"))
+test5 <- left_join(test4, Dose_9mg, by=c("simnum"))
+test6 <- left_join(test5, Dose_10mg, by=c("simnum"))
+test7 <- left_join(test6, Dose_11mg, by=c("simnum"))
+test8 <- left_join(test7, Dose_12mg, by=c("simnum"))
+test9 <- left_join(test8, Dose_13mg, by=c("simnum"))
+test10 <- left_join(test9, Dose_14mg, by=c("simnum"))
+test_final <- left_join(test10, Dose_15mg, by=c("simnum"))
+
+
+#On selectionne les probabilite d'AUC>666 superires ou egales a 0.6 les posologies de 4 à 15(mg/kg)
+
+tab_fin <- test_final%>% select(simnum, p.auc.4, p.auc.5, p.auc.6, p.auc.7, p.auc.8, p.auc.9, p.auc.10, p.auc.11, p.auc.12, p.auc.13, p.auc.14, p.auc.15) %>% filter(apply(test_final, 1, function(row) any(row >= 0.6)))
+
+
+#On transforme dans le tableau les proba < 0.6 d AUC >666 en NA 
+
+tab_fin <- tab_fin %>% mutate(across(everything(), ~ifelse(. < 0.6, NA, .)))
+
+#On selectionne pour chaque patient la plus petite proba d AUC >666 
+
+tab_fin$min_value <- rowMins(as.matrix(tab_fin[, -1]), na.rm = TRUE)
+
+#On remplace la probabilite par la dose  reliee a la probabilite
+
+min_col_indices <- apply(tab_fin[-1], 1, function(x) which.min(x))
+tab_fin$min_column <- colnames(tab_fin)[-1][min_col_indices]
+tab_fin <- tab_fin %>% select(simnum,min_column)
+tab_fin$min_column <- as.numeric(sub("^p\\.auc\\.(\\d+)$|^p\\.auc\\.(\\d+)$", "\\1", tab_fin$min_column))
+
+#Creation du nomogramme 
+#Chargement des caracterisques des patients (poids et creat)
+
+patient_s <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/caracteristique.csv", sep=";")
+
+
+#Matrice
+nom <- left_join(patient_s, tab_fin, by=c("simnum"))
+nom <- mutate(nom, dose= WEIGHT*min_column)
+nomh <- nom %>% select(-min_column, -simnum)
+write.csv2(nomh,file= 'nomh.csv') 
+
+matrice_H<- reshape(nomh, idvar = "CCR", timevar = "WEIGHT", direction = "wide")
+colnames(matrice_H) <- gsub("dose.", "", colnames(matrice_H))
+
+print(matrice_H)
+
+
+write.csv2(matrice_H,file= 'pmetrics_men.csv') 
+
+```
+
+
+#NOMOGRAMME FEMMES
+
+```{r}
+
+#Telechargement des probabilites d'AUC>666 pour chaque posologie (mg/kg)
+
+F_AUC_4 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/4F_AUC.csv", sep=";") %>% rename("p.auc.4"=prop.success) 
+F_AUC_5 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/5F_AUC.csv", sep=";") %>% rename("p.auc.5"=prop.success)
+F_AUC_6 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/6F_AUC.csv", sep=";") %>% rename("p.auc.6"=prop.success)   
+F_AUC_7 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/7F_AUC.csv", sep=";") %>% rename("p.auc.7"=prop.success) 
+F_AUC_8 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/8F_AUC.csv", sep=";") %>% rename("p.auc.8"=prop.success) 
+F_AUC_9 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/9F_AUC.csv", sep=";") %>% rename("p.auc.9"=prop.success)   
+F_AUC_10 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/10F_AUC.csv", sep=";") %>% rename("p.auc.10"=prop.success)
+F_AUC_11 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/11F_AUC.csv", sep=";") %>% rename("p.auc.11"=prop.success)
+F_AUC_12 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/12F_AUC.csv", sep=";") %>% rename("p.auc.12"=prop.success)
+F_AUC_13 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/13F_AUC.csv", sep=";") %>% rename("p.auc.13"=prop.success)
+F_AUC_14 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/14F_AUC.csv", sep=";") %>% rename("p.auc.14"=prop.success)
+F_AUC_15 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/15F_AUC.csv", sep=";") %>% rename("p.auc.15"=prop.success)   
+
+#Telechargement des probabilites C0>24,3 pour chaque posologie (mg/kg)
+
+F_C0_4 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/4F_C0.csv", sep=";") %>% rename("p.C0.4"=prop.success) %>% select(-simnum) 
+F_C0_5 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/5F_C0.csv", sep=";") %>% rename("p.C0.5"=prop.success) %>% select(-simnum)
+F_C0_6 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/6F_C0.csv", sep=";") %>% rename("p.C0.6"=prop.success) %>% select(-simnum) 
+F_C0_7 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/7F_C0.csv", sep=";") %>% rename("p.C0.7"=prop.success) %>% select(-simnum) 
+F_C0_8 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/8F_C0.csv", sep=";") %>% rename("p.C0.8"=prop.success) %>% select(-simnum)
+F_C0_9 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/9F_C0.csv", sep=";") %>% rename("p.C0.9"=prop.success) %>% select(-simnum) 
+F_C0_10 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/10F_C0.csv", sep=";") %>% rename("p.C0.10"=prop.success) %>% select(-simnum) 
+F_C0_11 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/11F_C0.csv", sep=";") %>% rename("p.C0.11"=prop.success) %>% select(-simnum) 
+F_C0_12 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/12F_C0.csv", sep=";") %>% rename("p.C0.12"=prop.success) %>% select(-simnum)
+F_C0_13 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/13F_C0.csv", sep=";") %>% rename("p.C0.13"=prop.success) %>% select(-simnum) 
+F_C0_14 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/14F_C0.csv", sep=";") %>% rename("p.C0.14"=prop.success) %>% select(-simnum) 
+F_C0_15 <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/15F_C0.csv", sep=";") %>% rename("p.C0.15"=prop.success) %>% select(-simnum) 
+
+
+#Accolement des tableaux des probabilites de C0 et AUC pour chaque posologie (mg/kg)
+#Si la proba d'avoir C0<24,3 est inférieure à 0,4 on considère que la posologie est utilisable (seuil toxique <0.4)
+
+Dose_4mg <- bind_cols(F_AUC_4, F_C0_4) %>% mutate(utilisable= ifelse(p.C0.4<0.4, 1, 0)) %>% filter(utilisable==1) 
+Dose_5mg <- bind_cols(F_AUC_5, F_C0_5) %>% mutate(utilisable= ifelse(p.C0.5<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_6mg <- bind_cols(F_AUC_6, F_C0_6) %>% mutate(utilisable= ifelse(p.C0.6<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_7mg <- bind_cols(F_AUC_7, F_C0_7) %>% mutate(utilisable= ifelse(p.C0.7<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_8mg <- bind_cols(F_AUC_8, F_C0_8) %>% mutate(utilisable= ifelse(p.C0.8<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_9mg <- bind_cols(F_AUC_9, F_C0_9) %>% mutate(utilisable= ifelse(p.C0.9<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_10mg <- bind_cols(F_AUC_10, F_C0_10) %>% mutate(utilisable= ifelse(p.C0.10<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_11mg <- bind_cols(F_AUC_11, F_C0_11) %>% mutate(utilisable= ifelse(p.C0.11<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_12mg <- bind_cols(F_AUC_12, F_C0_12) %>% mutate(utilisable= ifelse(p.C0.12<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_13mg <- bind_cols(F_AUC_13, F_C0_13) %>% mutate(utilisable= ifelse(p.C0.13<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_14mg <- bind_cols(F_AUC_14, F_C0_14) %>% mutate(utilisable= ifelse(p.C0.14<0.4, 1, 0)) %>% filter(utilisable==1)
+Dose_15mg <- bind_cols(F_AUC_15, F_C0_15) %>% mutate(utilisable= ifelse(p.C0.15<0.4, 1, 0)) %>% filter(utilisable==1)
+
+
+#On accole tous les tableaux avec left joint() 
+
+test1 <- left_join(Dose_4mg, Dose_5mg, by=c("simnum"))
+test2 <- left_join(test1, Dose_6mg, by=c("simnum"))
+test3 <- left_join(test2, Dose_7mg, by=c("simnum"))
+test4 <- left_join(test3, Dose_8mg, by=c("simnum"))
+test5 <- left_join(test4, Dose_9mg, by=c("simnum"))
+test6 <- left_join(test5, Dose_10mg, by=c("simnum"))
+test7 <- left_join(test6, Dose_11mg, by=c("simnum"))
+test8 <- left_join(test7, Dose_12mg, by=c("simnum"))
+test9 <- left_join(test8, Dose_13mg, by=c("simnum"))
+test10 <- left_join(test9, Dose_14mg, by=c("simnum"))
+test_final <- left_join(test10, Dose_15mg, by=c("simnum"))
+
+
+#On selectionne les probabilite d'AUC>666 superieures ou egales a 0.6 les posologies de 4 à 15(mg/kg)
+
+tab_fin <- test_final%>% select(simnum, p.auc.4, p.auc.5, p.auc.6, p.auc.7, p.auc.8, p.auc.9, p.auc.10, p.auc.11, p.auc.12, p.auc.13, p.auc.14, p.auc.15) %>% filter(apply(test_final, 1, function(row) any(row >= 0.6)))
+
+
+#On transforme dans le tableau les proba < 0.6 d AUC >666 en NA 
+
+tab_fin <- tab_fin %>% mutate(across(everything(), ~ifelse(. < 0.6, NA, .)))
+
+#On selectionne pour chaque patient la plus petite proba d AUC >666 
+
+tab_fin$min_value <- rowMins(as.matrix(tab_fin[, -1]), na.rm = TRUE)
+
+
+#On remplace la probabilite par la dose  reliee a la probabilite
+
+min_col_indices <- apply(tab_fin[-1], 1, function(x) which.min(x))
+tab_fin$min_column <- colnames(tab_fin)[-1][min_col_indices]
+tab_fin <- tab_fin %>% select(simnum,min_column)
+tab_fin$min_column <- as.numeric(sub("^p\\.auc\\.(\\d+)$|^p\\.auc\\.(\\d+)$", "\\1", tab_fin$min_column))
+
+
+#Creation du nomogramme 
+#Chargement des caracterisques des patients (poids et creat)
+
+patient_s <- read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/pmetrics/caracteristique.csv", sep=";")
+
+
+#Matrice
+nom <- left_join(patient_s, tab_fin, by=c("simnum"))
+nom <- mutate(nom, dose= WEIGHT*min_column)
+nomf <- nom %>% select(-min_column, -simnum)
+
+matrice_F<- reshape(nomf, idvar = "CCR", timevar = "WEIGHT", direction = "wide")
+colnames(matrice_F) <- gsub("dose.", "", colnames(matrice_F))
+write.csv2(nomf,file= 'nomf.csv') 
+
+print(matrice_F)
+
+
+write.csv2(matrice_F,file= 'pmetrics_women.csv') 
+
+```
+
+
+```{r}
+#TEST PMETRIC DANS LA BASE EXTERNE (PATIENTS REELS) 
+
+#Nettoyage tableau des patients reels
+ 
+library(dplyr)
+library(GGally)
+
+Patients_test_AUC = read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/Codes/Patients pour tester ML/Patients_test_AUC.csv", sep=";")[,1:5] %>% rename(ID=ID)
+
+Patients_test_autre = read.csv("C:/Users/flore/OneDrive/Bureau/Thèse/Codes/Patients pour tester ML/autres_final.csv", sep=";", na.strings=".") %>% select(-17, -12, -13) 
+
+patients <- left_join(Patients_test_AUC, Patients_test_autre, by= c("OCC","ID")) %>% filter(!is.na(Y)) %>% rename(C0=Y, dose_vrai=AMOUNT.x, temps_prélèvement=TIME.y, SEX=Sex, CREATCL=CG, AUC=AUC_24) %>% select(-AMOUNT.y, -TINF, -EVID, -SS, -II, -AGE, -TIME.x, -Creat)
+
+#Separation hommes et femmes reels en 2 tableaux distincts
+patients_f <- patients %>% filter(SEX==0) #femmes
+patients_h <- patients %>% filter(SEX==1) #hommes
+
+#Chargement des abaques de PKPOP hommes et femmes (sans dose=NA)
+femme <- nomf %>% mutate(SEX=0) %>% rename(WT=WEIGHT, CREATCL=CCR) %>% drop_na(dose)
+homme <- nomh %>% mutate(SEX=1) %>% rename(WT=WEIGHT, CREATCL=CCR) %>% drop_na(dose)
+
+
+# Interpolation bivariee non lineaire : estimation de la dose des patients reels par les abaques de PKPOP 
+
+library(akima)
+
+#FEMMES
+
+# Initialisation du vecteur pour stocker les doses estimées
+doses_estimees_f <- numeric(length = nrow(patients_f))
+
+# Boucle pour estimer la dose pour chaque couple de poids et de clairance de créatinine
+for (i in seq_len(nrow(patients_f))) {
+  interp_result <- interp(x = femme$WT, y = femme$CREATCL, z = femme$dose, xo = patients_f$WT[i], yo = patients_f$CREATCL[i], linear = FALSE)
+  doses_estimees_f[i] <- interp_result$z
+}
+
+# Afficher les doses estimees pour chaque couple
+doses_estimees_f
+patients_f_PK <- bind_cols(patients_f, doses_estimees_f)%>%rename(dose_estimee_PKPOP=...10) %>% filter(!is.na(dose_estimee_PKPOP))
+
+#HOMMES
+
+# Initialisation du vecteur pour stocker les doses estimees
+doses_estimees_h <- numeric(length = nrow(patients_h))
+
+# Boucle pour estimer la dose pour chaque couple de poids et de clairance de créatinine
+for (i in seq_len(nrow(patients_h))) {
+  interp_result <- interp(x = homme$WT, y = homme$CREATCL, z = homme$dose, xo = patients_h$WT[i], yo = patients_h$CREATCL[i], linear = FALSE)
+  doses_estimees_h[i] <- interp_result$z
+}
+
+# Afficher les doses estimées pour chaque couple
+doses_estimees_h
+patients_h_PK <- bind_cols(patients_h, doses_estimees_h)%>%rename(dose_estimee_PKPOP=...10) %>% filter(!is.na(dose_estimee_PKPOP))
+
+
+#Reunion des doses estimees homme et femme
+dosePK <- rbind(patients_f_PK, patients_h_PK) 
+dosePK <- dosePK[order(dosePK$ID),]
+
+#Ajout de la colonne evenement au tableau de donnees, des AUC et C0 estimes par produit en croix
+
+library(dplyr)
+
+t <- dosePK %>% mutate(
+  proposed_dose = plyr::round_any(dose_estimee_PKPOP,10),
+  true_dose =as.numeric(dose_vrai), 
+  event=case_when(AUC>666 & C0<=24.3 ~ "AUC>666 & C0<24.3 mg/L", 
+          AUC<666 & C0<=24.3 ~ "AUC<666 & C0<24.3 mg/L", 
+          AUC>666 & C0>24.3 ~ "AUC>666 & C0>24.3 mg/L", 
+          AUC<666 & C0>24.3 ~ "AUC<666 & C0>24.3 mg/L"),
+  AUC_PK = (AUC*dose_estimee_PKPOP)/true_dose,
+  C0_PK = (C0*dose_estimee_PKPOP)/true_dose)
+
+#Test du Chi2
+
+table_evaluation <- t %>% pivot_longer(cols = c( true_dose, proposed_dose), values_to =c("dose"), names_to = c("classe_dose")) %>%  pivot_longer(cols = c( AUC, AUC_PK), values_to =c("auc"), names_to = c("classe_auc")) %>%
+  pivot_longer(cols = c( C0, C0_PK), values_to =c("c0"), names_to = c("classe_c0")) %>% 
+  filter(classe_auc=="AUC"& classe_c0=="C0" & classe_dose=="true_dose" |classe_auc=="AUC_PK"& classe_c0=="C0_PK"& classe_dose=="proposed_dose") %>%
+  mutate(event=case_when(auc>666 & c0<=24.3 ~ "AUC>666 & C0<24.3 mg/L", 
+          auc<666 & c0<=24.3 ~ "AUC<666 & C0<24.3 mg/L", 
+          auc>666 & c0>24.3 ~ "AUC>666 & C0>24.3 mg/L", 
+          auc<666 & c0>24.3 ~ "AUC<666 & C0>24.3 mg/L"),
+         event_bin = if_else(event=="AUC>666 & C0<24.3 mg/L","AUC>666 & C0<24.3 mg/L","Others"))
+
+table_evaluation %>% group_by(classe_dose)  %>% summarise(prop = mean(event=="AUC>666 & C0<24.3 mg/L"), n=n())
+
+M = table(table_evaluation$classe_dose, table_evaluation$event_bin)
+chisq.test(M) # Prints test summary
+
+#Graphiques 2 : Proportion des evenements en fonction de doses vraies ou doses_PK
+
+ggbivariate(table_evaluation, outcome = "event", explanatory = c("classe_dose"), rowbar_args = list(size = 3)) + scale_fill_manual(breaks = c("AUC<666 & C0<24.3 mg/L", "AUC>666 & C0>24.3 mg/L", "AUC<666 & C0>24.3 mg/L", "AUC>666 & C0<24.3 mg/L"), values=c("red","#FFCC00", "#FF9900", "lightgreen")) + labs(fill = "Event :") 
+
+  
+ggbivariate(table_evaluation, outcome = "event_bin", explanatory = c("classe_dose")) + scale_fill_manual(breaks = c("AUC>666 & C0<24.3 mg/L", "Others"), values=c("lightgreen","#FFCC00")) + labs(fill = "Event :")
+
+
+```
+
+
+```{r}
+
+# TEST SANS UTILISATION DE L INTERPOLATION 
+
+patients_f 
+patients_h 
+
+#Chargement des abaques de PKPOP hommes et femmes (sans dose=NA)
+femme 
+homme 
+
+# femmes
+# Fonction pour trouver la dose la plus proche
+trouver_dose_proche <- function(WT, CREATCL, femme) {
+  distances <- sqrt((femme$WT - WT)^2 + (femme$CREATCL - CREATCL)^2)
+  idx_min <- which.min(distances)
+  return(femme$dose[idx_min])
+}
+
+# Appliquer la fonction à df2 pour créer la nouvelle colonne dosePK
+patients_f$dosePK <- mapply(trouver_dose_proche, patients_f$WT, patients_f$CREATCL, MoreArgs = list(femme = femme))
+
+# Afficher le résultat
+print(patients_f)
+
+
+#hommes
+trouver_dose_proche <- function(WT, CREATCL, homme) {
+  distances <- sqrt((homme$WT - WT)^2 + (homme$CREATCL - CREATCL)^2)
+  idx_min <- which.min(distances)
+  return(homme$dose[idx_min])
+}
+
+# Appliquer la fonction à df2 pour créer la nouvelle colonne dosePK
+patients_h$dosePK <- mapply(trouver_dose_proche, patients_h$WT, patients_h$CREATCL, MoreArgs = list(homme = homme))
+
+# Afficher le résultat
+print(patients_h)
+
+
+#Reunion des doses estimees homme et femme
+dosePK <- rbind(patients_f, patients_h) 
+dosePK <- dosePK[order(dosePK$ID),]
+
+#Ajout de la colonne evenement au tableau de donnees, des AUC et C0 estimes par produit en croix
+
+library(dplyr)
+
+t <- dosePK %>% mutate(
+  proposed_dose = plyr::round_any(dosePK,10),
+  true_dose =as.numeric(dose_vrai), 
+  event=case_when(AUC>666 & C0<=24.3 ~ "AUC>666 & C0<24.3 mg/L", 
+          AUC<666 & C0<=24.3 ~ "AUC<666 & C0<24.3 mg/L", 
+          AUC>666 & C0>24.3 ~ "AUC>666 & C0>24.3 mg/L", 
+          AUC<666 & C0>24.3 ~ "AUC<666 & C0>24.3 mg/L"),
+  AUC_PK = (AUC*dosePK)/true_dose,
+  C0_PK = (C0*dosePK)/true_dose)
+
+#Test du Chi2
+
+table_evaluation <- t %>% pivot_longer(cols = c( true_dose, proposed_dose), values_to =c("dose"), names_to = c("classe_dose")) %>%  pivot_longer(cols = c( AUC, AUC_PK), values_to =c("auc"), names_to = c("classe_auc")) %>%
+  pivot_longer(cols = c( C0, C0_PK), values_to =c("c0"), names_to = c("classe_c0")) %>% 
+  filter(classe_auc=="AUC"& classe_c0=="C0" & classe_dose=="true_dose" |classe_auc=="AUC_PK"& classe_c0=="C0_PK"& classe_dose=="proposed_dose") %>%
+  mutate(event=case_when(auc>666 & c0<=24.3 ~ "AUC>666 & C0<24.3 mg/L", 
+          auc<666 & c0<=24.3 ~ "AUC<666 & C0<24.3 mg/L", 
+          auc>666 & c0>24.3 ~ "AUC>666 & C0>24.3 mg/L", 
+          auc<666 & c0>24.3 ~ "AUC<666 & C0>24.3 mg/L"),
+         event_bin = if_else(event=="AUC>666 & C0<24.3 mg/L","AUC>666 & C0<24.3 mg/L","Others"))
+
+table_evaluation %>% group_by(classe_dose)  %>% summarise(prop = mean(event=="AUC>666 & C0<24.3 mg/L"), n=n())
+
+M = table(table_evaluation$classe_dose, table_evaluation$event_bin)
+chisq.test(M) # Prints test summary
+
+#Graphiques 2 : Proportion des evenements en fonction de doses vraies ou doses_PK
+
+ggbivariate(table_evaluation, outcome = "event", explanatory = c("classe_dose"), rowbar_args = list(size = 3)) + scale_fill_manual(breaks = c("AUC<666 & C0<24.3 mg/L", "AUC>666 & C0>24.3 mg/L", "AUC<666 & C0>24.3 mg/L", "AUC>666 & C0<24.3 mg/L"), values=c("red","#FFCC00", "#FF9900", "lightgreen")) + labs(fill = "Event :") 
+
+  
+ggbivariate(table_evaluation, outcome = "event_bin", explanatory = c("classe_dose")) + scale_fill_manual(breaks = c("AUC>666 & C0<24.3 mg/L", "Others"), values=c("lightgreen","#FFCC00")) + labs(fill = "Event :")
+
+
+
+```
+
+# Evaluation POPPK in the test set 
+```{r}
+
+#Separation hommes et femmes reels en 2 tableaux distincts
+ml_test_vrai_f <- ml_test_vrai %>% filter(SEX==0) #femmes
+ml_test_vrai_h <- ml_test_vrai %>% filter(SEX==1) #hommes
+
+#Chargement des abaques de PKPOP hommes et femmes (sans dose=NA)
+femme <- nomf %>% mutate(SEX=0) %>% rename(WT=WEIGHT, CREATCL=CCR) %>% drop_na(dose)
+homme <- nomh %>% mutate(SEX=1) %>% rename(WT=WEIGHT, CREATCL=CCR) %>% drop_na(dose)
+
+
+# Interpolation bivariee non lineaire : estimation de la dose des ml_test_vrais reels par les abaques de PKPOP 
+
+library(akima)
+
+#FEMMES
+
+# Initialisation du vecteur pour stocker les doses estimées
+doses_estimees_f <- numeric(length = nrow(ml_test_vrai_f))
+
+# Boucle pour estimer la dose pour chaque couple de poids et de clairance de créatinine
+for (i in seq_len(nrow(ml_test_vrai_f))) {
+  interp_result <- interp(x = femme$WT, y = femme$CREATCL, z = femme$dose, xo = ml_test_vrai_f$WT[i], yo = ml_test_vrai_f$CREATCL[i], linear = FALSE)
+  doses_estimees_f[i] <- interp_result$z
+}
+
+# Afficher les doses estimees pour chaque couple
+doses_estimees_f
+ml_test_vrai_f_PK <- bind_cols(ml_test_vrai_f, doses_estimees_f)%>%rename(dose_estimee_PKPOP=...11) %>% filter(!is.na(dose_estimee_PKPOP))
+
+#HOMMES
+
+# Initialisation du vecteur pour stocker les doses estimees
+doses_estimees_h <- numeric(length = nrow(ml_test_vrai_h))
+
+# Boucle pour estimer la dose pour chaque couple de poids et de clairance de créatinine
+for (i in seq_len(nrow(ml_test_vrai_h))) {
+  interp_result <- interp(x = homme$WT, y = homme$CREATCL, z = homme$dose, xo = ml_test_vrai_h$WT[i], yo = ml_test_vrai_h$CREATCL[i], linear = FALSE)
+  doses_estimees_h[i] <- interp_result$z
+}
+
+# Afficher les doses estimées pour chaque couple
+doses_estimees_h
+ml_test_vrai_h_PK <- bind_cols(ml_test_vrai_h, doses_estimees_h) %>%rename(dose_estimee_PKPOP=...11) %>% filter(!is.na(dose_estimee_PKPOP))
+
+
+#Reunion des doses estimees homme et femme
+dosePK_test <- rbind(ml_test_vrai_f_PK, ml_test_vrai_h_PK) 
+dosePK_test <- dosePK_test[order(dosePK_test$id),]
+
+#Ajout de la colonne evenement au tableau de donnees, des AUC et C0 estimes par produit en croix
+
+library(dplyr)
+
+t_test1 <- dosePK_test %>% mutate(
+  proposed_dose = plyr::round_any(dose_estimee_PKPOP,10),
+  true_dose =as.numeric(dose_vrai), 
+  event=case_when(AUC>666 & C0<=24.3 ~ "AUC>666 & C0<24.3 mg/L", 
+          AUC<666 & C0<=24.3 ~ "AUC<666 & C0<24.3 mg/L", 
+          AUC>666 & C0>24.3 ~ "AUC>666 & C0>24.3 mg/L", 
+          AUC<666 & C0>24.3 ~ "AUC<666 & C0>24.3 mg/L"),
+  AUC_PK = (AUC*dose_estimee_PKPOP)/true_dose,
+  C0_PK = (C0*dose_estimee_PKPOP)/true_dose)
+
+#Test du Chi2
+
+table_evaluation_test <- t_test1 %>% pivot_longer(cols = c( true_dose, proposed_dose), values_to =c("dose"), names_to = c("classe_dose")) %>%  pivot_longer(cols = c( AUC, AUC_PK), values_to =c("auc"), names_to = c("classe_auc")) %>%
+  pivot_longer(cols = c( C0, C0_PK), values_to =c("c0"), names_to = c("classe_c0")) %>% 
+  filter(classe_auc=="AUC"& classe_c0=="C0" & classe_dose=="true_dose" |classe_auc=="AUC_PK"& classe_c0=="C0_PK"& classe_dose=="proposed_dose") %>%
+  mutate(event=case_when(auc>666 & c0<=24.3 ~ "AUC>666 & C0<24.3 mg/L", 
+          auc<666 & c0<=24.3 ~ "AUC<666 & C0<24.3 mg/L", 
+          auc>666 & c0>24.3 ~ "AUC>666 & C0>24.3 mg/L", 
+          auc<666 & c0>24.3 ~ "AUC<666 & C0>24.3 mg/L"),
+         event_bin = if_else(event=="AUC>666 & C0<24.3 mg/L","AUC>666 & C0<24.3 mg/L","Others"))
+
+table_evaluation_test %>% group_by(classe_dose)  %>% summarise(prop = mean(event=="AUC>666 & C0<24.3 mg/L"), n=n())
+
+M = table(table_evaluation_test$classe_dose, table_evaluation_test$event_bin)
+chisq.test(M) # Prints test summary
+
+#Graphiques 2 : Proportion des evenements en fonction de doses vraies ou doses_PK
+
+ggbivariate(table_evaluation_test, outcome = "event", explanatory = c("classe_dose"), rowbar_args = list(size = 3)) + scale_fill_manual(breaks = c("AUC<666 & C0<24.3 mg/L", "AUC>666 & C0>24.3 mg/L", "AUC<666 & C0>24.3 mg/L", "AUC>666 & C0<24.3 mg/L"), values=c("red","#FFCC00", "#FF9900", "lightgreen")) + labs(fill = "Event :") 
+
+  
+ggbivariate(table_evaluation_test, outcome = "event_bin", explanatory = c("classe_dose")) + scale_fill_manual(breaks = c("AUC>666 & C0<24.3 mg/L", "Others"), values=c("lightgreen","#FFCC00")) + labs(fill = "Event :")
+
+```
+
+
+
+     
+     
